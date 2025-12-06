@@ -226,7 +226,6 @@ firesta_sf <- st_as_sf(Fire_Dept , coords = c("lon", "lat"), crs = 4326, remove 
 firesta_buf <- st_buffer(firesta_sf, dist = 100/0.3)
 ```
 
-
 ## 3. Data Merge
 
 ### 3.1 Join daily weather to fire incidents
@@ -309,9 +308,6 @@ fire_firetract <- fire_firetract |>
   )
 
 ```
-
-
-
 
 ## 4. data visualization
 
@@ -404,7 +400,7 @@ logit_model2 <- glm(
 summary(logit_model2)
 ```
 
-### 5.3 Model 3: full model 
+### 5.3 Model 3: full model
 
 ```{r}
 logit_model3 <- glm(
@@ -456,6 +452,7 @@ legend("bottomright",
 ```
 
 ### 5.6 Odds Ratios for Model 3
+
 ```{r}
 odds_ratios <- exp(coef(logit_model3))
 odds_ratios_df <- data.frame(
@@ -498,8 +495,6 @@ metrics <- bind_rows(
 metrics
 
 ```
-
-
 
 ## 7.k-fold Cross Validation
 
