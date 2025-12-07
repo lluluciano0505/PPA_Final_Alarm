@@ -1,14 +1,32 @@
 ---
-title: "Fire Alarm Prediction"
+title: "Fire Alarm Prediction-Technical Appendix"
+author:
+  - name: "Sihan Yu"
+  - name: "Isabelle Li"
+  - name: "Jingqi Lu"
+  - name: "Ming Cao"
 format:
   html:
     toc: true
     number-sections: true
     code-fold: true
+    warning: false
+    message: false
 editor: visual
 ---
 
-## 1. Setup
+# Introduction
+
+In the NFIRS (National Fire Incident Reporting System) reporting system, false alarms (codes 700–799) include system malfunctions, unintentional activations, detector errors, and malicious alarms. Although no actual fire is present, each false alarm still triggers a full fire department response.
+
+In OpenDataPhilly dataset, 77% of all fire-related incidents are false alarms. This extremely high share creates substantial operational burden: every response requires multiple firefighters, apparatus deployment, fuel and equipment usage, and temporarily removes units from availability for real emergencies.
+
+Reducing false alarms can save time, reduce firefighter workload, and improve public safety. This analysis produces a predicted probability of false alarm for each incident.\
+By choosing an appropriate threshold, the city can identify high-risk cases and apply targeted interventions to reduce unnecessary responses and operational costs.
+
+# Part 1: Data Preparation
+
+## 1.1 Setup
 
 ```{r setup}
 #| message: false
@@ -40,11 +58,11 @@ options(tigris_use_cache = TRUE, tigris_class = "sf", tigris_progress = FALSE)
 theme_set(theme_minimal(base_size = 12))
 ```
 
-## 2. Load Data
+## 1.2 Data Import & Cleaning
 
-### 2.1 Fire Alarm Data
+### 1.2.1 Fire Incident Data
 
-We recode incident types following NFIRS conventions. All 7xx events represent False Alarm & False Call responses (e.g., system malfunctions, detector errors, malicious alarms) and therefore form the positive class (1). In contrast, 1xx and 2xx codes correspond to real fire and overpressure/explosion incidents. These categories reflect genuine events requiring response and are thus coded as 0. This recoding cleanly separates false alarms from all non–false alarm incidents for modeling purposes.
+We recoded incident types following NFIRS conventions. All **7xx** incidents represent *False Alarm & False Call* responses (e.g., alarm system malfunctions, detector errors, accidental activations, and malicious alarms) and were coded as **1**. Incidents in the **1xx** and **2xx** series correspond to actual fires and overpressure/explosion events that required genuine emergency response; these were coded as **0**. This classification provides a clean separation between false alarms and all non–false alarm incidents for modeling purposes.
 
 ```{r}
 fire <- st_read("data/stat360/stat360_fire_incidents.shp", quiet = TRUE)
@@ -67,7 +85,9 @@ fire |>
   knitr::kable(digits = 3)
 ```
 
-### 2.2 Census Data
+### 1.2.2 Census Data
+
+We retrieved tract-level demographic and socioeconomic indicators from the 2023 American Community Survey (ACS) to incorporate neighborhood characteristics that may influence false-alarm patterns. Prior research shows that alarm activity often correlates with community demographics, housing conditions, and economic stressors. Accordingly, we included measures of population composition, educational attainment, income, and labor force status to capture these broader social determinants.
 
 ```{r}
 #| message: false
@@ -98,7 +118,9 @@ black_share = 100 * black / total_pop
 st_transform(st_crs(fire))
 ```
 
-### 2.3 Fire Alarm Data
+### 1.2.3 Fire Alarm Data
+
+Building certification information comes from the City of Philadelphia’s **Licenses and Inspections (L&I) Building Certifications** dataset on OpenDataPhilly. We joined these records to the building footprints to identify each building’s fire-alarm certification status (Active, Expired, or Deficient). Including this information allows the model to account for building-level inspection and maintenance conditions, which are closely related to false-alarm occurrences.
 
 ```{r}
 bldg_foot <- st_read("data/LI_BUILDING_FOOTPRINTS.shp", quiet = TRUE)
@@ -121,7 +143,7 @@ bldg_cert |>
   count(fire_alarm_status, sort = TRUE)
 ```
 
-### 2.4 Join the alarm data to census tracts
+We spatially joined the building certification records to census tracts to summarize inspection conditions at the neighborhood level. For each tract, we calculated the number of buildings with Active, Expired, or Deficient fire-alarm certifications and derived an **active certification rate**. These tract-level indicators were then merged into the ACS dataset, allowing the model to incorporate variation in building inspection status across neighborhoods.
 
 ```{r}
 bldg_tract <- bldg_cert |>
@@ -143,14 +165,11 @@ philly_census_alarm <- philly_census |>
 left_join(tract_alarm, by = "GEOID")
 ```
 
-### 2.5 Weather Data
+### 1.2.4 Weather Data
+
+We obtained hourly weather observations from the **PHL airport weather station** using the `riem_measures` API. Data were downloaded in several date ranges and combined into a single dataset, from which duplicate timestamps were removed. Including weather information allows the model to capture environmental conditions such as temperature, precipitation, and wind speed that may influence alarm activations and false-alarm likelihood.
 
 ```{r}
-library(riem)
-library(dplyr)
-library(tidyr)
-library(lubridate)
-
 get_phl <- function(start, end) {
   riem_measures(
     station     = "PHL",
@@ -203,7 +222,9 @@ weather_complete <- weather_processed %>%
 weather_complete$Precipitation <- weather_complete$Precipitation + 0.00001
 ```
 
-### 2.6 Identify the Work Days and Weekends
+### 1.2.5 Work Days and Weekends
+
+From the cleaned weather dataset, we generated a day-of-week variable and an `is_weekend` flag to capture weekly temporal patterns in alarm activity. Weekend versus weekday distinctions are included because building use and human activity differ substantially across the week. On weekends, many commercial and institutional buildings operate at reduced occupancy, while residential buildings experience increased activity. These shifts can influence how alarm systems behave through factors such as maintenance schedules, system testing times, building vacancy, cooking activity, or nuisance triggers.
 
 ```{r}
 weather_daily <- weather_complete %>%
@@ -217,18 +238,25 @@ weather_daily %>%
 
 ```
 
-### 2.7 Location of Fire Stations
+### 1.2.6 Location of Fire Stations
+
+We incorporated the locations of Philadelphia fire stations by converting the `Fire_Dept` table into a spatial dataset using station latitude and longitude. A 100-meter buffer was generated around each station to capture buildings located very close to fire infrastructure. Proximity to a fire station may relate to false-alarm activity, for example, areas near stations may include larger commercial buildings with more alarm systems, more frequent maintenance activity, or higher reporting sensitivity.
 
 ```{r}
-library(readr)
+#| echo: false
+#| message: false
+#| warning: false
+
 Fire_Dept <- read_csv("data/Fire_Dept.csv")
 firesta_sf <- st_as_sf(Fire_Dept , coords = c("lon", "lat"), crs = 4326, remove = FALSE)
 firesta_buf <- st_buffer(firesta_sf, dist = 100/0.3)
 ```
 
-## 3. Data Merge
+## 1.3 Data Merge
 
-### 3.1 Join daily weather to fire incidents
+Multiple contextual variables were merged onto the incident dataset to create a comprehensive analytic file. Weather observations were linked by date, fire station buffers were used to generate a proximity indicator, and incidents were spatially joined to census tracts to attach neighborhood socioeconomic and building-inspection attributes. We also derived temporal structure by assigning each incident to a calendar quarter, and calculated the distance from each incident to Philadelphia City Hall as a simple measure of urban centrality. Together, these additions introduce temporal, spatial, and neighborhood-level variation that may influence false-alarm patterns.
+
+### 1.3.1 Join Daily Weather to Fire Incidents
 
 ```{r}
 fire_weather <- fire %>%
@@ -241,7 +269,7 @@ fire_weather <- fire %>%
   )
 ```
 
-### 3.2 Join the Fire Station Buffer
+### 1.3.2 Join the Fire Station Buffer
 
 ```{r}
 fire_weather_station <- fire_weather |>
@@ -255,7 +283,7 @@ fire_weather_station <- fire_weather_station |>
   )
 ```
 
-### 3.3 Combine with Census Tract Data
+### 1.3.3 Combine with Census Tract Data
 
 ```{r}
 philly_census_alarm <- philly_census_alarm |>
@@ -271,7 +299,7 @@ left = TRUE
 )
 ```
 
-### 3.4 Create Quarter colomn
+### 1.3.4 Create Quarter Colmn
 
 ```{r}
 fire_firetract <- fire_firetract |>
@@ -283,7 +311,7 @@ labels = c("Q1", "Q2", "Q3", "Q4"))
 )
 ```
 
-### 3.5 Distance to City Hall
+### 1.3.5 Distance to City Hall
 
 ```{r}
 downtown <- tribble(
@@ -309,9 +337,9 @@ fire_firetract <- fire_firetract |>
 
 ```
 
-## 4. data visualization
+# Part 2: Exploratory Data Analysis
 
-### 4.1 Map: False Alarm Rate by Census Tract
+## 2.1 Map: False Alarm Rate by Census Tract
 
 ```{r}
 tract_fire_stats <- fire_firetract |>
@@ -348,35 +376,191 @@ ggplot(philly_census_alarm_fire) +
   )
 ```
 
-### 4.2 Bar Chart: False Alarm Rate by Quarter
+**Interpretation**
+
+This map shows the spatial distribution of false alarms across Philadelphia census tracts. Each tract is shaded according to the share of incidents classified as false alarms (primary code 7). Darker purple areas represent neighborhoods where false alarms make up a larger proportion of fire responses, while lighter areas exhibit lower false-alarm activity. Tracts with no recorded incidents during the study period are shown in grey. The pattern highlights substantial geographic variation: several central and high-density neighborhoods display elevated false-alarm rates, whereas some peripheral areas show relatively fewer false responses.
+
+## 2.2 Pie Chart: True Fire vs False Alarm
 
 ```{r}
-quarter_stats <- fire_firetract |>
-st_drop_geometry() |>
-dplyr::filter(!is.na(quarter)) |>
-dplyr::group_by(quarter) |>
-dplyr::summarise(
-n_incidents  = dplyr::n(),
-n_false_7   = sum(inc_new == 1, na.rm = TRUE),
-false_rate_7 = n_false_7 / n_incidents
-)
+#| include: false
+binary_summary <- fire |>
+  st_drop_geometry() |>
+  mutate(
+    fire_type = factor(
+      inc_new,
+      levels = c(0, 1),
+      labels = c("True Fire", "False Alarm")
+    )
+  ) |>
+  count(fire_type, name = "n") |>
+  mutate(
+    p       = n / sum(n),
+    p_label = scales::percent(p, accuracy = 1)
+  )
 
-ggplot(quarter_stats, aes(x = quarter, y = false_rate_7)) +
-geom_col(fill = "blue3") +
-geom_text(aes(label = scales::percent(false_rate_7, accuracy = 1)),
-vjust = -0.3, size = 3) +
-scale_y_continuous(labels = scales::percent_format(accuracy = 1)) +
-labs(
-title = "City-wide False Alarm Rate by Quarter",
-x     = "Quarter",
-y     = "False alarm rate (inc_67 share of incidents)"
-) +
-theme_minimal()
 ```
 
-## 5. Modeling
+```{r}
+ggplot(binary_summary, aes(x = "", y = p, fill = fire_type)) +
+  geom_col(width = 1, color = "white") +
+  geom_text(
+    aes(label = p_label),
+    position = position_stack(vjust = 0.5),
+    size = 4
+  ) +
+  coord_polar(theta = "y") +
+  scale_fill_manual(
+    values = c(
+      "True Fire"   = "lightblue",
+      "False Alarm" = "hotpink"
+    )
+  ) +
+  labs(
+    title = "True Fire vs False Alarm Incidents",
+    fill  = "Incident Type"
+  ) +
+  theme_void() +
+  theme(
+    plot.title = element_text(
+      hjust = 0.5,
+      size = 14,
+      face = "bold"
+    )
+  )
 
-### 5.1 Logit Model1: with wealther data
+```
+
+**Interpretation**
+
+The pie chart summarizes the composition of all fire-related incidents in Philadelphia during the study period. False alarms account for **77%** of all dispatches, while true fire events represent only **23%**. This large imbalance highlights a central operational challenge for the Fire Department: the vast majority of responses do **not** involve an actual fire, yet still require staff time, equipment movement, and system capacity. The high prevalence of false alarms underscores the importance of predictive modeling to help identify where and when such calls are most likely to occur.
+
+## 2.3 Line Chart: False Alarm Rate by Quarter
+
+```{r}
+#| warning: false
+#| message: false
+#| fig.width: 6
+#| fig.height: 4
+
+ggplot(quarter_stats, aes(x = quarter, y = false_rate_7, group = 1)) +
+  geom_line(color = "hotpink", size = 1.4) +           
+  geom_point(color = "hotpink", size = 3.8) +             
+  geom_text(
+    aes(label = percent(false_rate_7, accuracy = 1)),
+    vjust = -0.6,
+    size = 4,
+    color = "#2c3e50"                   
+  ) +
+  scale_y_continuous(
+    labels = percent_format(),
+    limits = c(0.70, 0.84)              
+  ) +
+  labs(
+    title = "City-wide False Alarm Rate by Quarter",
+    x = "Quarter",
+    y = "False Alarm Rate"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(size = 15, face = "bold", hjust = 0.5),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_blank(),
+    axis.text.x = element_text(face = "bold")
+  )
+
+```
+
+**Interpretation**
+
+The quarterly trend shows modest but consistent seasonal variation in Philadelphia’s false alarm rate. Rates rise from **75% in Q1** to a peak of **81% in Q3**, before dropping to **73% in Q4**. This pattern suggests that false alarms become slightly more common during the summer months and decline toward the end of the year. Although the seasonal differences are not dramatic, they highlight that false alarm activity is not evenly distributed across the calendar, which may have implications for staffing, resource planning, and inspection scheduling.
+
+## 2.4 Map: Expired Alarm Certificates Share by Census Tract
+
+```{r}
+
+bldg_cert_flag <- bldg_cert |>
+  filter(!is.na(fire_alarm_status)) |>
+  mutate(
+    alarm_expired = case_when(
+      fire_alarm_status == "Expired" ~ 1L,
+      fire_alarm_status %in% c("Active", "Deficient") ~ 0L,
+      TRUE ~ NA_integer_
+    )
+  )
+
+bldg_cert_flag <- st_transform(bldg_cert_flag, st_crs(philly_census))
+
+bldg_tract <- st_join(
+  bldg_cert_flag,
+  philly_census |> dplyr::select(GEOID),
+  left = FALSE
+)
+
+tract_expired <- bldg_tract |>
+  st_drop_geometry() |>
+  filter(!is.na(alarm_expired)) |>
+  group_by(GEOID) |>
+  summarise(
+    n_bldg_cert  = n(),
+    expired_share = mean(alarm_expired),
+    .groups = "drop"
+  )
+```
+
+```{r}
+#| fig.width: 7
+#| fig.height: 5
+
+ggplot(tract_map) +
+  geom_sf(aes(fill = expired_share), color = NA) +
+  scale_fill_viridis_c(
+    option = "magma",
+    direction = -1,
+    labels = percent_format(accuracy = 1),
+    na.value = "grey90"
+  ) +
+  labs(
+    title = "Expired Alarm Certificates Share",
+    fill  = "Expired Share"
+  ) +
+  coord_sf(datum = NA) + 
+  theme_minimal(base_size = 13) +
+   theme(
+    plot.title      = element_text(face = "bold", hjust = 0.5, margin = margin(b = 10)),
+    axis.text       = element_blank(),
+    axis.title      = element_blank(),
+    axis.ticks      = element_blank(),
+    panel.grid      = element_blank(),
+    panel.background = element_rect(fill = "white", color = NA),
+    plot.margin     = margin(10, 10, 10, 10)
+  )
+
+```
+
+**Interpretation**
+
+This map illustrates the share of buildings with **expired fire alarm certifications** across Philadelphia census tracts. Higher-expiry areas (shaded in darker purple) appear in several parts of North and West Philadelphia, as well as pockets of the Northeast. These neighborhoods tend to show a larger proportion of buildings whose annual alarm inspections are overdue, signaling potential maintenance challenges or compliance gaps. In contrast, many tracts in Center City and portions of South Philadelphia display lower expired shares, suggesting stronger inspection adherence. The geographic pattern indicates that certification compliance is not uniform across the city and may align with broader socioeconomic differences, telling us areas where targeted outreach or enforcement may be most needed.
+
+# Part 3: Modeling
+
+## 3.1 Model1: Weather Data
+
+Model 1 is a baseline logistic regression that predicts whether an incident is a false alarm (`inc_new = 1`) using only **weather conditions** and **building-level activity rates** on the day of the call. The model includes:
+
+-   **Temperature**: Daily average temperature
+
+<!-- -->
+
+-   **Precipitation**: Total daily precipitation
+
+<!-- -->
+
+-   **Wind_Speed**: Average daily wind speed
+
+<!-- -->
+
+-   **active_rate**: Share of buildings in the tract with an active (valid) fire alarm certification
 
 ```{r}
 logit_model1 <- glm(
@@ -385,10 +569,51 @@ logit_model1 <- glm(
   family = binomial(link = "logit")
 )
 
+```
+
+```{r}
+#| echo: true
+#| eval: true
+#| code-fold: true
 summary(logit_model1)
 ```
 
-### 5.2 Model 2: socio-economic added
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+coef_tab2 <- summary(logit_model1)$coefficients |>
+  as.data.frame() |>
+  rownames_to_column("Variable") |>
+  mutate(
+    Estimate     = round(Estimate, 4),
+    `Std. Error` = round(`Std. Error`, 4),
+    `z value`    = round(`z value`, 2),
+    `Pr(>|z|)`   = signif(`Pr(>|z|)`, 3)
+  )
+
+knitr::kable(
+  coef_tab2,
+  caption = "Logistic Regression Model: Weather Predictors Only",
+  align   = "lrrrr"
+)
+```
+
+Logit Model 1 serves as the baseline specification, incorporating only weather variables and the building-level alarm compliance rate to predict whether an incident is a false alarm. The model’s estimates indicate statistically significant effects for temperature and precipitation, suggesting that warmer days and days with measurable precipitation are associated with a higher likelihood of false alarms. In contrast, wind speed and the active certification rate do not reach conventional significance levels in this simplified model. Overall model fit is modest, with limited explanatory power relative to later specifications that incorporate socioeconomic, spatial, and temporal predictors. As expected for a parsimonious model, it captures only a small share of the variation in incident outcomes and primarily functions as a reference point against which the performance gains of more complete models can be assessed.
+
+## 3.2 Model 2: Socioeconomic
+
+Model 2 extends the baseline specification by incorporating census tract–level socioeconomic characteristics to capture structural factors that may influence false alarm patterns. In addition to the weather variables and active building certification rates from Model 1, this model includes:
+
+-   **median_income:** Median household income, reflecting economic resources and potential differences in building conditions. 232qq
+
+-   **ba_rate:** Share of adults holding a bachelor’s degree, used as a proxy for neighborhood socio-demographic composition.
+
+-   **black_share:** Percentage of Black residents in the tract, capturing racial composition patterns relevant for equity analysis.
+
+-   **unemployment_rate:** Local unemployment levels, which may correlate with neighborhood stressors or reporting behaviors.
+
+These variables allow the model to account for broader socioeconomic context rather than relying solely on incident-day environmental factors.
 
 ```{r}
 logit_model2 <- glm(
@@ -397,10 +622,51 @@ logit_model2 <- glm(
   data   = fire_firetract,
   family = binomial(link = "logit")
 )
+
+```
+
+```{r}
+#| echo: true
+#| eval: true
+#| code-fold: true
 summary(logit_model2)
 ```
 
-### 5.3 Model 3: full model
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+
+coef_tab_m2 <- summary(logit_model2)$coefficients |>
+  as.data.frame() |>
+  rownames_to_column("Variable") |>
+  mutate(
+    Estimate     = round(Estimate, 4),
+    `Std. Error` = round(`Std. Error`, 4),
+    `z value`    = round(`z value`, 2),
+    `Pr(>|z|)`   = signif(`Pr(>|z|)`, 3)
+  )
+
+knitr::kable(
+  coef_tab_m2,
+  caption = "Logit Model 2: With Socioeconomic Predictors",
+  align   = "lrrrr"
+)
+```
+
+Model 2 expands the baseline specification by incorporating socioeconomic characteristics of each census tract, and its performance improves substantially relative to Model 1. Education level (ba_rate), Black population share, and median income are highly statistically significant, indicating that false alarm patterns are strongly associated with underlying demographic and socioeconomic conditions. The model’s coefficients suggest that areas with higher educational attainment and larger Black population shares exhibit higher probabilities of false alarms, even after controlling for weather and building-level compliance activity. Compared with the baseline model, the residual deviance decreases from 67133 to 59730 and the AIC drops from 67143 to 59748, indicating a markedly better fit. These gains show that socioeconomic context meaningfully contributes to predicting false alarms and helps explain variation that weather alone cannot.
+
+## 3.3 Model 3: Full Model
+
+Model 3 extends the previous specifications by incorporating temporal patterns and spatial accessibility factors that may influence the likelihood of a false alarm. In addition to weather, building characteristics, and neighborhood socioeconomic indicators, this model includes:
+
+-   **is_weekend** : Whether the incident occurred on a weekend, capturing changes in occupancy, human activity, and reporting behavior between weekdays and weekends.
+
+-   **quarter**: A categorical indicator for seasonal variation (Q1–Q4), allowing the model to account for cyclical patterns in alarm activity across the year.
+
+-   **near_station_200m**: A binary variable identifying incidents that occur within 200 meters of a fire station, representing potential differences in response environments and built-environment characteristics around stations.
+
+-   **dist_cityhall_km**: The distance from the incident location to Philadelphia City Hall, serving as a proxy for urban centrality and potential differences between high-density downtown areas and more peripheral neighborhoods.
 
 ```{r}
 logit_model3 <- glm(
@@ -410,11 +676,41 @@ logit_model3 <- glm(
   data   = fire_firetract,
   family = binomial(link = "logit")
 )
+```
 
+```{r}
+#| echo: true
+#| eval: true
+#| code-fold: true
 summary(logit_model3)
 ```
 
-### 5.4 Model Comparison
+```{r}
+#| echo: false
+#| warning: false
+#| message: false
+coef_tab2 <- summary(logit_model3)$coefficients |>
+  as.data.frame() |>
+  rownames_to_column("Variable") |>
+  mutate(
+    Estimate     = round(Estimate, 4),
+    `Std. Error` = round(`Std. Error`, 4),
+    `z value`    = round(`z value`, 2),
+    `Pr(>|z|)`   = signif(`Pr(>|z|)`, 3)
+  )
+
+knitr::kable(
+  coef_tab2,
+  caption = "Logistic Regression Model: Full Model",
+  align   = "lrrrr"
+)
+```
+
+The full model delivers the strongest predictive performance among the three specifications. Adding socioeconomic factors, temporal indicators, and spatial proximity variables substantially improves model fit, reducing deviance and lowering AIC compared to Models 1 and 2. Several predictors show significant associations with false-alarm likelihood, most notably education level, racial composition, unemployment rate, and building certification activity while weather variables retain moderate predictive power. Temporal effects are modest but present, with higher false-alarm rates in Q3 and lower rates in Q4. Spatial features contribute additional explanatory value, as calls nearer to fire stations and farther from Center City are slightly less likely to be false alarms. Overall, the full model captures the most complete set of behavioral, environmental, and geographic signals and therefore serves as the best-performing specification for subsequent interpretation and policy analysis.
+
+## 3.4 Model Evaluation
+
+### 3.4.1 AUC Comparison
 
 ```{r}
 dat1 <- model.frame(logit_model1) 
@@ -439,7 +735,9 @@ data.frame(
 
 ```
 
-### 5.5 ROC Curve Plot
+Across the three logistic regression specifications, predictive performance improves steadily as additional structural, socioeconomic, and temporal features are introduced. Model 1 achieves an AUC of **0.554**, indicating very limited predictive power and only marginal improvement over random guessing. Adding socioeconomic variables in Model 2 substantially increases the AUC to **0.670**, suggesting that neighborhood‐level demographic and income patterns provide meaningful signal in distinguishing false alarms from true fire events. The full model (Model 3), which incorporates temporal indicators, proximity to fire stations, and distance to downtown, yields the highest AUC of **0.672**. Although the improvement over Model 2 is modest, it indicates that these operational and spatial predictors add incremental information beyond weather and socioeconomic structure.
+
+### 3.4.2 ROC Curve Plot
 
 ```{r}
 plot(roc1, col = "blue", lwd = 2, main = "ROC Curves for Logit Models")
@@ -451,52 +749,9 @@ legend("bottomright",
        lwd    = 2)
 ```
 
-### 5.6 Odds Ratios for Model 3
+The ROC curves visualize how each model balances sensitivity and specificity across all possible thresholds. Model 1 shows the weakest discrimination, with a curve only slightly above the 45-degree no-skill line. Model 2 improves substantially once socioeconomic characteristics are added, producing a visibly steeper curve. Model 3 offers a modest gain: adding temporal factors and spatial proximity variables produces the strongest curve overall, indicating the most consistent ability to distinguish false alarms from real incidents across thresholds.
 
-```{r}
-odds_ratios <- exp(coef(logit_model3))
-odds_ratios_df <- data.frame(
-  Variable    = names(odds_ratios),
-  Odds_Ratio = odds_ratios
-)
-odds_ratios_df %>%
-  knitr::kable(digits = 3, caption = "Odds Ratios for Logit Model 3")
-```
-
-## 6. Threhold Choice
-
-```{r}
-
-get_metrics <- function(th) {
-  pred <- ifelse(p3 >= th, 1L, 0L)
-  cm   <- table(Actual = dat3$inc_new, Pred = pred)
-
-  TN <- cm["0","0"]; FP <- cm["0","1"]
-  FN <- cm["1","0"]; TP <- cm["1","1"]
-
-  tibble(
-    threshold  = th,
-    TN  = as.numeric(TN),
-    FP  = as.numeric(FP),
-    FN  = as.numeric(FN),
-    TP  = as.numeric(TP),
-    accuracy   = (TP + TN) / sum(cm),
-    sensitivity = TP / (TP + FN), 
-    specificity = TN / (TN + FP), 
-    fpr        = FP / (FP + TN)   
-  )
-}
-
-metrics <- bind_rows(
-  get_metrics(0.9),
-  get_metrics(0.6)
-)
-
-metrics
-
-```
-
-## 7.k-fold Cross Validation
+### 3.4.3 K-fold Cross Validation
 
 ```{r}
 set.seed(123)
@@ -534,4 +789,123 @@ logit_cv_model <- train(
 logit_cv_model
 ```
 
-## 8. Conclusion
+To assess the stability of the full logistic regression model, we conduct 5-fold cross-validation on the training data. The cross-validated ROC (0.672) is nearly identical to the in-sample ROC reported earlier, indicating that the model’s predictive performance is highly stable across different data splits. The very high sensitivity and low specificity largely reflect the substantial class imbalance in the outcome (false alarms ≈ 77%). Because classification thresholds are not yet optimized at this stage, these values are not used for model selection; instead, cross-validation primarily confirms that the model generalizes consistently.
+
+### 3.4.4 Odds Ratios for Model 3
+
+```{r}
+or_table <- tidy(logit_model3) %>%
+  mutate(
+    odds_ratio = exp(estimate),
+    estimate   = round(estimate, 4),
+    odds_ratio = round(odds_ratio, 3),
+    std.error  = round(std.error, 4),
+    statistic  = round(statistic, 2),
+    p_value    = signif(p.value, 3)
+  ) %>%
+  dplyr::select(term, odds_ratio, estimate, std.error, statistic, p_value) %>%
+  dplyr::rename(
+    Variable   = term,
+    Odds_Ratio = odds_ratio,
+    Std_Error  = std.error,
+    z_value    = statistic
+  )
+
+kable(
+  or_table,
+  caption = "Odds Ratios for Logit Model 3",
+  align   = "lrrrrr"
+)
+```
+
+The odds‐ratio table summarizes how each predictor influences the likelihood that an incident is classified as a false alarm after controlling for all other variables. Weather variables, particularly temperature and precipitation, remain strong predictors, with higher temperatures and any measurable precipitation increasing the likelihood of a false alarm. Building compliance also matters: tracts with higher active certification rates show significantly greater odds of false alarms, consistent with patterns observed in the earlier models. Socioeconomic context continues to contribute meaningful signal, higher educational attainment, a larger Black population share, and higher unemployment are all associated with elevated false-alarm odds, even after controlling for weather and temporal factors. Temporal features add smaller but still interpretable effects: false alarms are slightly less likely on weekends and in Q4, and marginally more likely in Q3. Finally, spatial accessibility plays a role: incidents occurring near a fire station (\<200m) or farther from Center City show modestly reduced odds of being false alarms. Together, these results suggest that false-alarm activity reflects an interaction of environmental conditions, neighborhood characteristics, and system operations.
+
+## 3.5 Threshold Selection
+
+In a logistic regression model, predicted values represent the probability that an incident is a false alarm. To convert these probabilities into binary classifications (false alarm vs. real incident), a decision threshold must be chosen. Different thresholds produce different trade-offs between sensitivity (true positive rate) and specificity (true negative rate).
+
+We evaluated two candidate thresholds—0.9 and 0.4—to illustrate how classification behavior changes under different risk tolerances.
+
+```{r}
+
+get_metrics <- function(th) {
+  pred <- ifelse(p3 >= th, 1L, 0L)
+  cm   <- table(Actual = dat3$inc_new, Pred = pred)
+
+  TN <- cm["0","0"]; FP <- cm["0","1"]
+  FN <- cm["1","0"]; TP <- cm["1","1"]
+
+  tibble(
+    threshold  = th,
+    TN  = as.numeric(TN),
+    FP  = as.numeric(FP),
+    FN  = as.numeric(FN),
+    TP  = as.numeric(TP),
+    accuracy   = (TP + TN) / sum(cm),
+    sensitivity = TP / (TP + FN), 
+    specificity = TN / (TN + FP), 
+    fpr        = FP / (FP + TN)   
+  )
+}
+
+metrics <- bind_rows(
+  get_metrics(0.9),
+  get_metrics(0.4)
+)
+
+metrics
+
+```
+
+**Interpretation**
+
+Threshold = 0.9 (Conservative)
+
+A threshold of 0.9 classifies an incident as a false alarm only when the predicted probability is extremely high.
+
+Very high specificity (96.4%): almost all true incidents are correctly labeled as real.
+
+Very low sensitivity (8.1%): the model fails to identify most false alarms (42,024 false negatives).
+
+This threshold minimizes false positives but misses the vast majority of false alarms. This setting is appropriate in contexts where misclassifying a real emergency as a false alarm is unacceptable, such as prioritizing safety or enforcement on only the most extreme cases.
+
+Threshold = 0.4 (Aggressive)
+
+A threshold of 0.4 classifies an incident as a false alarm when the predicted probability exceeds 40%.\
+Extremely high sensitivity (99.95%): nearly all false alarms are detected (only 23 missed).
+
+Very low specificity (0.28%): almost all true incidents are incorrectly labeled as false alarms.
+
+This threshold identifies almost every false alarm but also generates a large number of false positives. This setting is useful in contexts where the goal is to maximize detection, such as broad preventive inspections or outreach.
+
+# Part 4: Recommendations
+
+Based on the model comparison and operational needs, we recommend adopting a **0.4 threshold** as the decision rule for identifying likely false alarms. Selecting a lower threshold does not imply that the Fire Department will *ignore* these calls; rather, it allows the Department to differentiate levels of risk more effectively. When the model indicates a high likelihood of a false alarm, fire crews would still respond, but they can deploy a **lighter response package**,smaller teams, fewer apparatus, and reduced resource commitment. This minimizes unnecessary operational costs, reduces roadway risk, and preserves capacity for true emergencies. In addition, for calls predicted as likely false alarms, response teams can carry **educational materials, communication guidelines, and basic fire-alarm inspection toolkits**, allowing them to both address the call and engage with property managers about system maintenance and common causes of false activations.
+
+Beyond operational adjustments, we also recommend a set of longer-term policy strategies.
+
+First, the City should strengthen **mandatory fire-alarm inspection and compliance enforcement**. For buildings with repeated false alarms or expired certificates, a tiered penalty structure or more frequent re-inspections may create stronger incentives for timely system maintenance.
+
+Second, the City should expand **public and community education** efforts. The Fire Department could host workshops, property-manager trainings, or community sessions on alarm maintenance, common malfunction causes, and mitigation strategies. Targeted outreach may be especially effective in neighborhoods or buildings with historically high false-alarm rates.
+
+Taken together, the 0.4 threshold provides a practical balance: it maximizes the identification of false alarms while still ensuring a safe response. It also creates opportunities for more flexible deployment, stronger compliance mechanisms, and education-driven prevention—ultimately reducing the long-term frequency of false alarms across the city.
+
+# Part 5: Limitations&Next Steps
+
+## **5.1 Limitations**
+
+Although the model provides meaningful predictive ability, it still faces several important limitations. First, the data contain gaps and inconsistencies, for example, missing or outdated fire-alarm certificate records and uneven data quality across neighborhoods which can reduce model stability. Second, because the current model is binary, it can only classify alarms as “false” vs. “not false,” and cannot distinguish different levels of fire risk. No matter how high or low the predicted probability is, the final decision still requires using a single threshold, which restricts how much nuance the model can express. In addition, any misclassification carries real consequences: mislabeling a true fire as a false alarm could delay response, while treating a likely false alarm as high risk may burden residents and property owners and potentially exacerbate existing enforcement inequities. For these reasons, the model should be used as a decision-support tool rather than a substitute for professional judgment.
+
+## **5.2 Improvement Possibilities**
+
+With richer data, more development time, or additional funding, the model could be expanded into a **multi-tier risk classification system**, instead of a simple binary prediction. For example, alarms could be grouped into four levels:
+
+-   Tier 1 = high emergency (very likely real fire)
+
+-   Tier 2 = moderate risk (standard response)
+
+-   Tier 3 = minor risk (non-emergency conditions possible)
+
+-   Tier 4 = high-probability false alarm (light response package)
+
+Achieving this would require integrating additional features, such as alarm device age, building maintenance histories, humidity/smoke environment data, renovation activity, and more granular spatial patterns. These richer inputs would allow the model to shift from hard thresholding to continuous risk scoring and tiered operational strategies, enabling more precise allocation of fire-department resources. Future enhancements could also include multiclass models or time-series analysis to support an even more nuanced and safety-balanced dispatch framework.
