@@ -1,0 +1,106 @@
+---
+title: "Fire Alarm Prediction"
+subtitle: "Improving the Fire Alarm Program and Emergency Service Efficiency"
+author: "Ming Cao, Isabelle Li, Luciano Lu, Sihan Yu"
+format:
+  revealjs:
+    theme: simple
+    slide-number: true
+    smaller: true
+    code-overflow: wrap
+    slide-level: 2  
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+# Introduction
+
+-   Problem Statement\
+-   Why this matter\
+-   Goal
+
+## Data Sources {.smaller}
+
+| Source | Description | Key Variables / Features |
+|------------------------|------------------------|------------------------|
+| **Fire Incidents (NFIRS-coded)** | Incident points (2024–2025) | Label: **1 = 7xx false alarm**; 0 = 1xx/2xx; time + geometry |
+| **L&I Building Certifications (OpenDataPhilly)** | Building inspection/cert records (incl. fire alarm systems) | `fire_alarm_status` (Active/Expired/Deficient); tract-level **active/expired rates** |
+| **Fire Stations (OpenDataPhilly)** | Station locations | distance / `near_station_200m` |
+| **ACS (tidycensus)** | Tract socioeconomic context | `median_income`, `ba_rate`, `unemployment_rate`, `black_share`, `total_pop` |
+| **Weather (METAR via riem, PHL)** | Hourly conditions (2024–2025) | temp/wind/precip + timestamp join |
+
+## False Alarm: Scale + Space {.smaller}
+
+![](data/Fig1.jpg){width="100%"}
+
+## Time + Possible mechanism
+
+![](data/Fig2.jpg){width="100%"}
+
+## Methods Overview {.smaller}
+
+-   Technique: Logistic regression (logit)
+
+-   Why appropriate: interpretable, outputs probabilities, easy to operationalize
+
+-   Validation: k-fold cross-validation, ROC/AUC
+
+-   Threshold choice: balances false positives vs false negatives
+
+## Results & Performance {.smaller}
+
+![](data/roc.jpg){width="100%" height="480px"}
+
+::: {style="font-size:0.7em; line-height:1.1;"}
+| Model | Feature set (summary) | AUC |
+|------------------------|------------------------|------------------------|
+| Logit Model 1 | Baseline (operational / weather) | **0.554** |
+| Logit Model 2 | \+ Neighborhood context (ACS tract) | **0.670** |
+| Logit Model 3 | Full model (+ built env / certificates / proximity) | **0.672** |
+:::
+
+## Operating Threshold & Risk Tiers {.smaller}
+
+**Model 3 (predicting 1 = false alarm):**
+
+-   **Conservative threshold = 0.9:**\
+    Sensitivity = **0.08**, Specificity = **0.96** (FP = **493**, FN = **42,024**)\
+-   **Aggressive threshold = 0.4:**\
+    Sensitivity = **1.00**, Specificity = **0.00** (FP = **13,571**, FN = **23**)
+
+*Important: The model is for **prevention and planning** — not to delay or deny emergency response.*
+
+# Recommendations {.smaller}
+
+-   **Operational: Tiered response package**\
+    - Smaller crew + fewer apparatus for likely false alarms\
+    - Bring education materials + basic inspection tools
+
+<!-- -->
+
+-   **Long-term:**\
+    - Strengthen compliance\
+    - Community education
+
+# Limitations & Next Steps {.smaller}
+
+-   **Limitations**\
+    - Data\
+    - Model\
+    - Bias & harm risk
+
+-   **Future Possibilities**
+
+# Questions?
+
+**Thank You!**
+
+<small>Contact: isabli\@upenn.edu · GitHub: \[https://github.com/Isabelliiii\]</small>
+
+<small>Contact: yusihan\@upenn.edu · GitHub: \[https://github.com/sihan-yu429\]</small>
+
+<small>Contact: lu25\@upenn.edu · GitHub: \[https://github.com/lluluciano0505\]</small>
+
+<small>Contact: cao4\@upenn.edu · GitHub: \[https://github.com/bananafish9107\]</small>
